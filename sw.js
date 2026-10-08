@@ -1,5 +1,7 @@
-// キャッシュしておいた画面をすぐ表示し、裏で最新版を取りに行く（次に開いた時に反映）
-const CACHE = "diet-log-v1";
+// 更新がすぐ届くよう、ページ本体はネット優先（約4秒で切り上げ）→ だめならキャッシュ。
+// アイコンなどはキャッシュ優先。
+const VERSION = "v3-2026-10-08";
+const CACHE = `diet-log-${VERSION}`;
 const FILES = [
   "./",
   "./index.html",
@@ -8,6 +10,7 @@ const FILES = [
   "./apple-touch-icon.png",
   "./icon-192.png",
   "./icon-512.png",
+  "./icon-maskable-512.png",
 ];
 
 self.addEventListener("install", (e) => {
@@ -22,16 +25,34 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+const timeout = (p, ms) => new Promise((res, rej) => {
+  const t = setTimeout(() => rej(new Error("timeout")), ms);
+  p.then((v) => { clearTimeout(t); res(v); }, (err) => { clearTimeout(t); rej(err); });
+});
+
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET" || new URL(req.url).origin !== location.origin) return;
-  e.respondWith(
-    caches.open(CACHE).then(async (cache) => {
-      const cached = await cache.match(req, { ignoreSearch: true });
-      const network = fetch(req)
-        .then((res) => { if (res.ok) cache.put(req, res.clone()); return res; })
-        .catch(() => cached);
-      return cached || network;
-    })
-  );
+
+  // ページとアプリ本体はネット優先
+  const fresh = req.mode === "navigate" || /app\.js|index\.html|\/$/.test(new URL(req.url).pathname);
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE);
+    if (fresh) {
+      try {
+        const res = await timeout(fetch(req), 4000);
+        if (res && res.ok) cache.put(req, res.clone());
+        return res;
+      } catch {
+        const hit = await cache.match(req, { ignoreSearch: true });
+        if (hit) return hit;
+        return cache.match("./index.html");
+      }
+    }
+    const hit = await cache.match(req, { ignoreSearch: true });
+    if (hit) return hit;
+    const res = await fetch(req);
+    if (res && res.ok) cache.put(req, res.clone());
+    return res;
+  })());
 });
